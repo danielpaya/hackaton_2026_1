@@ -75,6 +75,146 @@ const MOCK_DRIVERS = [
   { id: 5, name: 'Miguel Sánchez', type: 'Mensajería', score: 52, risk: 'Alto', events: 19, avatar: 'MS', trend: '-4' },
 ];
 
+// =========================================
+// TREND-BASED INSURANCE DATA MODEL
+// Generates 15-day history per driver with:
+// - Daily score + smoothed insurer score (0.7*hist + 0.3*recent)
+// - Event types and penalty classification
+// - Consistency metrics & decomposition factors
+// =========================================
+const SCORE_FACTORS = [
+  { factor: 'Velocidad',             weight: 35 },
+  { factor: 'Frenadas bruscas',      weight: 25 },
+  { factor: 'Consistencia',          weight: 25 },
+  { factor: 'Exposición zonas riesgo', weight: 15 },
+];
+
+// Driver-specific configs for history generation
+const DRIVER_PROFILES = {
+  1: { base: 78, badDay: { idx: 10, score: 42 }, decomp: { speed: 'Medio', brakes: 'Alto', consistency: 'Medio', exposure: 'Bajo' } },
+  2: { base: 92, badDay: null,                    decomp: { speed: 'Bajo',  brakes: 'Bajo', consistency: 'Alto',  exposure: 'Bajo' } },
+  3: { base: 38, badDay: null, chronicallyBad: true, decomp: { speed: 'Alto', brakes: 'Alto', consistency: 'Bajo', exposure: 'Alto' } },
+  4: { base: 93, badDay: { idx: 10, score: 58 },  decomp: { speed: 'Bajo',  brakes: 'Medio', consistency: 'Alto', exposure: 'Bajo' } },
+  5: { base: 55, badDay: { idx: 8, score: 30 },   decomp: { speed: 'Medio', brakes: 'Medio', consistency: 'Bajo', exposure: 'Alto' } },
+};
+
+const INSURANCE_DATA = {}; // Will hold generated data per driver id
+
+function generateAllInsuranceData() {
+  const eventPool = ['Velocidad', 'Frenada brusca', 'Zigzagueo', 'Zona de riesgo'];
+
+  MOCK_DRIVERS.forEach(driver => {
+    const profile = DRIVER_PROFILES[driver.id];
+    const history = [];
+    let insurerScore = profile.base;
+    let consecutiveBadDays = 0;
+    let safeDays = 0;
+    let criticalDays = 0;
+    let bestStreak = 0;
+    let currentStreak = 0;
+
+    for (let dayOffset = 14; dayOffset >= 0; dayOffset--) {
+      const date = new Date();
+      date.setDate(date.getDate() - dayOffset);
+      const dateStr = date.toLocaleDateString('es-CO', { day: 'numeric', month: 'short' });
+
+      // Calculate daily score
+      let dailyScore;
+      const dayIndex = 14 - dayOffset; // 0-14, chronological
+
+      if (profile.badDay && dayIndex === profile.badDay.idx) {
+        // THE bad day
+        dailyScore = profile.badDay.score;
+      } else if (profile.chronicallyBad) {
+        dailyScore = profile.base + Math.floor(Math.random() * 16) - 8;
+        if (dayIndex > 7) dailyScore -= 10; // deteriorates
+      } else {
+        // Normal variation ±6 around base
+        dailyScore = profile.base + Math.floor(Math.random() * 12) - 6;
+      }
+      dailyScore = Math.max(0, Math.min(100, dailyScore));
+
+      // Smoothed insurer score: 0.7 * previous + 0.3 * today
+      insurerScore = Math.round(0.7 * insurerScore + 0.3 * dailyScore);
+
+      // Events
+      const numEvents = dailyScore < 60 ? Math.floor(Math.random() * 3) + 2
+                       : dailyScore < 80 ? Math.floor(Math.random() * 2) + 1
+                       : Math.floor(Math.random() * 2);
+      const eventType = numEvents > 0 ? eventPool[Math.floor(Math.random() * eventPool.length)] : 'Ninguno';
+      const impact = dailyScore >= insurerScore ? `+${Math.abs(dailyScore - insurerScore)}` : `-${Math.abs(dailyScore - insurerScore)}`;
+
+      // Penalty logic based on consecutive bad days
+      if (dailyScore < 70) {
+        consecutiveBadDays++;
+      } else {
+        consecutiveBadDays = 0;
+      }
+
+      let penalty;
+      if (consecutiveBadDays === 0) penalty = 'No penaliza';
+      else if (consecutiveBadDays === 1) penalty = 'En observación';
+      else if (consecutiveBadDays === 2) penalty = 'Penalización leve';
+      else penalty = 'Penalización fuerte';
+
+      // Consistency tracking
+      if (dailyScore >= 75) {
+        safeDays++;
+        currentStreak++;
+        bestStreak = Math.max(bestStreak, currentStreak);
+      } else {
+        currentStreak = 0;
+      }
+      if (dailyScore < 50) criticalDays++;
+
+      history.push({
+        date: dateStr,
+        dailyScore,
+        insurerScore,
+        events: numEvents,
+        type: eventType,
+        impact,
+        penalty,
+      });
+    }
+
+    // Determine trend
+    const firstHalf = history.slice(0, 7).reduce((s, h) => s + h.insurerScore, 0) / 7;
+    const secondHalf = history.slice(8).reduce((s, h) => s + h.insurerScore, 0) / Math.max(1, history.slice(8).length);
+    const trendDiff = secondHalf - firstHalf;
+    const trend = trendDiff > 3 ? 'Mejora' : trendDiff < -3 ? 'Deterioro' : 'Estable';
+
+    // Score decomposition (fixed weights, variable performance)
+    const decomp = SCORE_FACTORS.map(f => {
+      const key = f.factor === 'Velocidad' ? 'speed'
+                : f.factor === 'Frenadas bruscas' ? 'brakes'
+                : f.factor === 'Consistencia' ? 'consistency'
+                : 'exposure';
+      const level = profile.decomp[key];
+      const impactVal = level === 'Bajo' ? Math.floor(Math.random() * 3) + 6
+                      : level === 'Medio' ? Math.floor(Math.random() * 3)
+                      : -(Math.floor(Math.random() * 5) + 5);
+      return { ...f, level, impact: impactVal };
+    });
+
+    INSURANCE_DATA[driver.id] = {
+      history,
+      insurerScore: history[history.length - 1].insurerScore,
+      metrics: {
+        safeDaysPct: Math.round((safeDays / 15) * 100),
+        criticalDays,
+        bestStreak,
+        trend,
+      },
+      decomposition: decomp,
+    };
+  });
+}
+generateAllInsuranceData();
+
+
+
+
 // AI Messages
 const AI_MESSAGES = {
   safe: [
@@ -1568,65 +1708,227 @@ function initDashboardMap() {
 
 
 // =========================================
-// INSURANCE MODULE
+// INSURANCE MODULE — TREND-BASED
 // =========================================
-function renderInsurance() {
-  const selectedDriver = MOCK_DRIVERS[3]; // Camila Torres — best score
+let insuranceChart = null; // Track chart instance for cleanup
 
+function renderInsurance() {
+  const selectedDriver = MOCK_DRIVERS[3]; // Camila Torres — default (best case to demo)
   return `
     <div class="dashboard-page page-enter">
       <div class="dashboard-container">
         <div class="dashboard-header">
-          <h1>Módulo de Seguros Dinámicos</h1>
-          <p>Pólizas personalizadas basadas en comportamiento real</p>
+          <h1>Seguros Dinámicos — Modelo de Tendencias</h1>
+          <p>Evaluación basada en comportamiento consistente, no en eventos aislados</p>
         </div>
 
-        <div class="insurance-section">
+        <div class="insurance-section" id="insuranceSection">
           <!-- Driver selector -->
           <div class="glass-card" style="padding:1rem;margin-bottom:1rem;">
             <h3 style="font-size:0.9rem;font-weight:700;margin-bottom:0.75rem;display:flex;align-items:center;gap:0.5rem;">
               <i data-lucide="user" style="width:16px;height:16px;"></i> Seleccionar Conductor
             </h3>
             <div class="insurance-driver-chips">
-              ${MOCK_DRIVERS.map(d => {
-                return `
-                  <button class="btn btn-sm ${d.id === selectedDriver.id ? 'btn-primary' : 'btn-secondary'}" 
-                    onclick="renderInsuranceFor(${d.id})" 
-                    id="insBtn${d.id}">
-                    ${d.avatar} ${d.name.split(' ')[0]}
-                  </button>
-                `;
-              }).join('')}
+              ${MOCK_DRIVERS.map(d => `
+                <button class="btn btn-sm ${d.id === selectedDriver.id ? 'btn-primary' : 'btn-secondary'}" 
+                  onclick="renderInsuranceFor(${d.id})" id="insBtn${d.id}">
+                  ${d.avatar} ${d.name.split(' ')[0]}
+                </button>
+              `).join('')}
             </div>
           </div>
 
-          <!-- Premium calculation -->
-          ${renderInsuranceCard(selectedDriver)}
+          <!-- Full insurance content -->
+          <div id="insuranceContent">
+            ${renderInsuranceFullContent(selectedDriver)}
+          </div>
         </div>
       </div>
     </div>
   `;
 }
 
-function renderInsuranceCard(driver) {
+function renderInsuranceFullContent(driver) {
+  const data = INSURANCE_DATA[driver.id];
+  const iScore = data.insurerScore;
+  const scoreColor = getStatusColor(iScore);
+  const scoreLabel = getStatusLabel(iScore);
+  const m = data.metrics;
+  const trendIcon = m.trend === 'Mejora' ? '📈' : m.trend === 'Deterioro' ? '📉' : '➡️';
+  const trendColor = m.trend === 'Mejora' ? 'var(--safe)' : m.trend === 'Deterioro' ? 'var(--risky)' : 'var(--moderate)';
+
+  // Pricing based on INSURER score (not daily)
   const basePremium = 850000;
-  const discount = Math.round((driver.score / 100) * 35);
+  const discount = Math.round((iScore / 100) * 35);
   const actualDiscount = Math.max(5, Math.min(35, discount));
   const newPremium = Math.round(basePremium * (1 - actualDiscount / 100));
   const savings = basePremium - newPremium;
-  const scoreColor = getStatusColor(driver.score);
-  const scoreLabel = getStatusLabel(driver.score);
+
+  // Find bad day info
+  const badDay = data.history.find(h => h.dailyScore < h.insurerScore - 15);
+  const badDayMsg = badDay 
+    ? `El evento del <strong>${badDay.date}</strong> redujo el score diario a <strong>${badDay.dailyScore}</strong>, pero el score asegurador se mantuvo en <strong>${badDay.insurerScore}</strong> gracias a la consistencia acumulada.`
+    : '';
+
+  // Generate IA insight
+  let insightMsg;
+  if (iScore >= 80) {
+    insightMsg = `<strong>${driver.name}</strong> mantiene un score asegurador de <strong style="color:${scoreColor}">${iScore}/100</strong>. 
+    El <strong>${m.safeDaysPct}%</strong> de sus trayectos son seguros, con una mejor racha de <strong>${m.bestStreak} días</strong> consecutivos. 
+    ${badDayMsg ? badDayMsg : 'No se registran caídas significativas.'}
+    <br><br>
+    <strong style="color:var(--accent-light)">Este conductor no se penaliza por un evento aislado; se evalúa su tendencia completa.</strong> 
+    Su consistencia le permite acceder al máximo nivel de descuento.`;
+  } else if (iScore >= 60) {
+    insightMsg = `<strong>${driver.name}</strong> presenta un score asegurador moderado de <strong style="color:${scoreColor}">${iScore}/100</strong>.
+    ${m.safeDaysPct}% de días seguros y ${m.criticalDays} días críticos en los últimos 15 días.
+    ${badDayMsg}
+    <br><br>
+    <strong style="color:var(--accent-light)">Este conductor no se penaliza por un evento aislado; se evalúa su tendencia completa.</strong>
+    Se recomienda mejorar frenadas y velocidad para acceder a mejores descuentos.`;
+  } else {
+    insightMsg = `<strong>${driver.name}</strong> presenta un score asegurador de riesgo: <strong style="color:${scoreColor}">${iScore}/100</strong>.
+    Solo ${m.safeDaysPct}% de días seguros, con ${m.criticalDays} días críticos. Tendencia: <strong>${m.trend}</strong>.
+    <br><br>
+    <strong style="color:var(--moderate)">Aunque evaluamos tendencias y no eventos aislados, este conductor muestra un patrón repetido de riesgo.</strong>
+    Se recomiendan capacitaciones obligatorias antes de poder acceder a descuentos.`;
+  }
 
   return `
-    <div class="glass-card insurance-card" id="insuranceCard">
-      <div style="text-align:center;margin-bottom:1.25rem;">
+    <!-- 1. TREND CHART -->
+    <div class="glass-card" style="padding:1rem;margin-bottom:1rem;">
+      <h3 style="font-size:0.9rem;font-weight:700;margin-bottom:0.5rem;display:flex;align-items:center;gap:0.5rem;">
+        <i data-lucide="trending-up" style="width:16px;height:16px;"></i>
+        Tendencia de Score — ${driver.name}
+      </h3>
+      <p style="font-size:0.7rem;color:var(--text-muted);margin-bottom:0.75rem;">
+        Fórmula: <code style="background:rgba(255,255,255,0.06);padding:0.15rem 0.4rem;border-radius:4px;font-size:0.65rem;">Score Asegurador = 0.7 × histórico + 0.3 × reciente</code>
+      </p>
+      <div class="chart-container" style="height:260px;">
+        <canvas id="insuranceTrendChart"></canvas>
+      </div>
+    </div>
+
+    <!-- 2. CONSISTENCY METRICS -->
+    <div class="ins-metrics-grid">
+      <div class="glass-card ins-metric-card">
+        <div class="ins-metric-value" style="color:var(--safe)">${m.safeDaysPct}%</div>
+        <div class="ins-metric-label">Días seguros</div>
+      </div>
+      <div class="glass-card ins-metric-card">
+        <div class="ins-metric-value" style="color:var(--risky)">${m.criticalDays}</div>
+        <div class="ins-metric-label">Días críticos</div>
+      </div>
+      <div class="glass-card ins-metric-card">
+        <div class="ins-metric-value" style="color:var(--accent-light)">${m.bestStreak}</div>
+        <div class="ins-metric-label">Mejor racha</div>
+      </div>
+      <div class="glass-card ins-metric-card">
+        <div class="ins-metric-value" style="color:${trendColor}">${trendIcon}</div>
+        <div class="ins-metric-label">${m.trend}</div>
+      </div>
+    </div>
+
+    <!-- 3. SCORE DECOMPOSITION TABLE -->
+    <div class="glass-card" style="padding:1rem;margin-bottom:1rem;">
+      <h3 style="font-size:0.9rem;font-weight:700;margin-bottom:0.75rem;display:flex;align-items:center;gap:0.5rem;">
+        <i data-lucide="sliders" style="width:16px;height:16px;"></i>
+        Descomposición del Score
+      </h3>
+      <div class="ins-table-wrapper">
+        <table class="ins-table">
+          <thead>
+            <tr>
+              <th>Factor</th>
+              <th>Peso</th>
+              <th>Desempeño</th>
+              <th>Impacto</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${data.decomposition.map(d => {
+              const levelClass = d.level === 'Bajo' ? 'safe' : d.level === 'Medio' ? 'moderate' : 'risky';
+              const levelLabel = d.level === 'Bajo' ? 'Bajo riesgo' : d.level === 'Medio' ? 'Riesgo medio' : 'Alto riesgo';
+              const impactColor = d.impact >= 0 ? 'var(--safe)' : 'var(--risky)';
+              return `
+                <tr>
+                  <td style="font-weight:600;">${d.factor}</td>
+                  <td style="font-family:var(--font-mono);text-align:center;">${d.weight}%</td>
+                  <td><span class="status-badge status-${levelClass}" style="font-size:0.65rem;">${levelLabel}</span></td>
+                  <td style="font-family:var(--font-mono);font-weight:700;color:${impactColor};text-align:center;">${d.impact > 0 ? '+' : ''}${d.impact}</td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 4. HISTORY TABLE -->
+    <div class="glass-card" style="padding:1rem;margin-bottom:1rem;">
+      <h3 style="font-size:0.9rem;font-weight:700;margin-bottom:0.75rem;display:flex;align-items:center;gap:0.5rem;">
+        <i data-lucide="calendar" style="width:16px;height:16px;"></i>
+        Historial de 15 Días
+      </h3>
+      <div class="ins-table-wrapper">
+        <table class="ins-table">
+          <thead>
+            <tr>
+              <th>Fecha</th>
+              <th>Score Día</th>
+              <th>Score Aseg.</th>
+              <th>Eventos</th>
+              <th>Tipo</th>
+              <th>Impacto</th>
+              <th>Penalización Prima</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${data.history.map(h => {
+              const dayColor = getStatusColor(h.dailyScore);
+              const insColor = getStatusColor(h.insurerScore);
+              const isBadDay = h.dailyScore < h.insurerScore - 15;
+              const rowClass = isBadDay ? 'ins-row-bad' : '';
+              const penaltyClass = h.penalty === 'No penaliza' ? 'safe' 
+                                 : h.penalty === 'En observación' ? 'moderate'
+                                 : h.penalty === 'Penalización leve' ? 'risky' 
+                                 : 'critical';
+              return `
+                <tr class="${rowClass}">
+                  <td style="white-space:nowrap;font-weight:600;">${h.date}</td>
+                  <td style="font-family:var(--font-mono);font-weight:700;color:${dayColor};text-align:center">${h.dailyScore}</td>
+                  <td style="font-family:var(--font-mono);font-weight:700;color:${insColor};text-align:center">${h.insurerScore}</td>
+                  <td style="font-family:var(--font-mono);text-align:center">${h.events}</td>
+                  <td style="font-size:0.7rem;white-space:nowrap">${h.type}</td>
+                  <td style="font-family:var(--font-mono);font-weight:600;color:${h.impact.startsWith('+') ? 'var(--safe)' : h.impact === '0' ? 'var(--text-muted)' : 'var(--risky)'};text-align:center">${h.impact}</td>
+                  <td><span class="ins-penalty-badge ins-penalty-${penaltyClass}">${h.penalty}</span></td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 5. AI INSIGHT -->
+    <div class="glass-card ins-insight-card" style="margin-bottom:1rem;">
+      <div class="ins-insight-header">
+        <span class="ins-insight-icon">🧠</span>
+        <h3>Insight IA — Análisis de Tendencia</h3>
+      </div>
+      <p class="ins-insight-text">${insightMsg}</p>
+    </div>
+
+    <!-- 6. PRICING -->
+    <div class="glass-card" style="padding:1.25rem;margin-bottom:1rem;">
+      <div style="text-align:center;margin-bottom:1rem;">
         <div class="driver-avatar" style="width:50px;height:50px;font-size:1rem;margin:0 auto 0.5rem;">
           ${driver.avatar}
         </div>
-        <h2 style="font-size:1.2rem;font-weight:800;">${driver.name}</h2>
-        <p style="color:var(--text-secondary);font-size:0.8rem;">${driver.type}</p>
-        <span class="status-badge status-${getStatusClass(driver.score)}" style="margin-top:0.35rem;">
-          Score: ${driver.score} — ${scoreLabel}
+        <h2 style="font-size:1.1rem;font-weight:800;">${driver.name}</h2>
+        <p style="color:var(--text-secondary);font-size:0.75rem;">${driver.type}</p>
+        <span class="status-badge status-${getStatusClass(iScore)}" style="margin-top:0.35rem;">
+          Score Asegurador: ${iScore} — ${scoreLabel}
         </span>
       </div>
 
@@ -1662,33 +1964,142 @@ function renderInsuranceCard(driver) {
           </div>
         </div>
       </div>
+    </div>
 
-      <div class="insurance-explanation">
-        <h4 style="font-size:0.8rem;font-weight:700;margin-bottom:0.35rem;color:var(--accent-light);">
-          🧠 Explicación IA
-        </h4>
-        <p>
-          ${driver.score >= 80 
-            ? `${driver.name} mantiene un score de <strong>${driver.score}/100</strong>, indicando bajo riesgo. Con solo <strong>${driver.events} eventos</strong> registrados, califica para el máximo descuento. Tendencia positiva (${driver.trend} pts).`
-            : driver.score >= 60
-            ? `${driver.name} tiene un score moderado de <strong>${driver.score}/100</strong>. Con <strong>${driver.events} eventos</strong>, hay oportunidad de mejora. Recomendamos reducir frenadas bruscas y excesos de velocidad.`
-            : `${driver.name} presenta un score de riesgo de <strong>${driver.score}/100</strong> con <strong>${driver.events} eventos críticos</strong>. Se recomienda capacitación intensiva para mejorar su perfil.`
-          }
-        </p>
+    <!-- 7. B2B EXECUTIVE MESSAGE -->
+    <div class="glass-card ins-b2b-card">
+      <h3 style="font-size:0.95rem;font-weight:800;margin-bottom:0.75rem;color:var(--accent-light);display:flex;align-items:center;gap:0.5rem;">
+        <i data-lucide="building-2" style="width:16px;height:16px;"></i>
+        Para Aseguradoras: Evaluación basada en comportamiento
+      </h3>
+      <div class="ins-b2b-points">
+        <div class="ins-b2b-point">
+          <div class="ins-b2b-icon">🛡️</div>
+          <div>
+            <strong>Reduce falsos castigos</strong>
+            <p>Un solo evento negativo no destruye la prima del conductor. El modelo de suavización (<code>0.7 × histórico + 0.3 × reciente</code>) absorbe anomalías aisladas.</p>
+          </div>
+        </div>
+        <div class="ins-b2b-point">
+          <div class="ins-b2b-icon">📊</div>
+          <div>
+            <strong>Premia la consistencia</strong>
+            <p>Los conductores con trayectos sostenidamente seguros obtienen descuentos reales, incentivando buenas prácticas a largo plazo.</p>
+          </div>
+        </div>
+        <div class="ins-b2b-point">
+          <div class="ins-b2b-icon">🎯</div>
+          <div>
+            <strong>Segmentación real del riesgo</strong>
+            <p>Diferenciamos entre un conductor que tuvo un mal día y uno con un patrón repetido de conducción peligrosa. Solo este último es penalizado.</p>
+          </div>
+        </div>
       </div>
     </div>
   `;
 }
 
-// Global function for driver selection
+function initInsuranceChart(driverId) {
+  const data = INSURANCE_DATA[driverId];
+  if (!data) return;
+
+  // Destroy previous chart
+  if (insuranceChart) {
+    insuranceChart.destroy();
+    insuranceChart = null;
+  }
+
+  const ctx = document.getElementById('insuranceTrendChart');
+  if (!ctx) return;
+
+  Chart.defaults.color = '#a0a0b8';
+  Chart.defaults.borderColor = 'rgba(255,255,255,0.06)';
+
+  const labels = data.history.map(h => h.date);
+  const dailyScores = data.history.map(h => h.dailyScore);
+  const insurerScores = data.history.map(h => h.insurerScore);
+
+  // Color points based on risk for daily line
+  const pointColors = dailyScores.map(s => getStatusColor(s));
+  const pointRadii = data.history.map(h => h.dailyScore < h.insurerScore - 15 ? 7 : 3);
+
+  insuranceChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Score Diario',
+          data: dailyScores,
+          borderColor: 'rgba(245, 158, 11, 0.8)',
+          backgroundColor: 'rgba(245, 158, 11, 0.08)',
+          fill: false,
+          tension: 0.3,
+          borderWidth: 2,
+          borderDash: [6, 3],
+          pointBackgroundColor: pointColors,
+          pointBorderColor: pointColors,
+          pointRadius: pointRadii,
+          pointHoverRadius: 8,
+        },
+        {
+          label: 'Score Asegurador',
+          data: insurerScores,
+          borderColor: '#6366f1',
+          backgroundColor: 'rgba(99, 102, 241, 0.12)',
+          fill: true,
+          tension: 0.4,
+          borderWidth: 3,
+          pointRadius: 2,
+          pointHoverRadius: 6,
+          pointBackgroundColor: '#6366f1',
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: { boxWidth: 14, padding: 12, font: { size: 11 }, usePointStyle: true }
+        },
+        tooltip: {
+          callbacks: {
+            afterBody: function(context) {
+              const idx = context[0].dataIndex;
+              const h = data.history[idx];
+              let lines = [];
+              if (h.events > 0) lines.push(`Eventos: ${h.events} (${h.type})`);
+              lines.push(`Penalización: ${h.penalty}`);
+              if (h.dailyScore < h.insurerScore - 15) lines.push('⚠️ DÍA MALO DETECTADO');
+              return lines;
+            }
+          }
+        }
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { font: { size: 9 }, maxRotation: 45 } },
+        y: { 
+          min: 0, max: 100, 
+          grid: { color: 'rgba(255,255,255,0.04)' }, 
+          ticks: { font: { size: 10 }, stepSize: 20 }
+        }
+      }
+    }
+  });
+}
+
+// Global function for driver selection in insurance module
 window.renderInsuranceFor = function(driverId) {
   const driver = MOCK_DRIVERS.find(d => d.id === driverId);
   if (!driver) return;
 
-  // Update card
-  const cardContainer = document.getElementById('insuranceCard');
-  if (cardContainer) {
-    cardContainer.outerHTML = renderInsuranceCard(driver);
+  // Update content
+  const contentEl = document.getElementById('insuranceContent');
+  if (contentEl) {
+    contentEl.innerHTML = renderInsuranceFullContent(driver);
   }
 
   // Update button states
@@ -1700,6 +2111,9 @@ window.renderInsuranceFor = function(driverId) {
   });
 
   if (window.lucide) lucide.createIcons();
+
+  // Re-init chart for new driver
+  setTimeout(() => initInsuranceChart(driverId), 100);
 };
 
 
