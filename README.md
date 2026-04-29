@@ -34,6 +34,21 @@ En Colombia y Latinoamérica, la conducción de motocicletas presenta altísimas
 
 ---
 
+## ¿Cómo funciona el Score Asegurador? (Influencia de los días)
+
+El problema de los seguros actuales es que penalizan a los conductores por eventos aislados. MotoGuard AI introduce un **Modelo de Tendencias**, lo que significa que **tu score no se destruye por tener un solo "mal día"**.
+
+Nuestra IA calcula una prima justa combinando tu comportamiento histórico con tu desempeño reciente a través de esta fórmula de suavización:
+
+`Score Asegurador = (0.7 × Score Histórico Acumulado) + (0.3 × Score del Día)`
+
+**¿Cómo afectan realmente los días a tu score?**
+1. **Días atípicos (mal día aislado):** Si tienes un excelente historial pero un día cometes una imprudencia grave, el peso del historial (70%) actuará como un "colchón". Tu score del día bajará, pero tu Score Asegurador a largo plazo se mantendrá estable casi por completo. *No pierdes tu descuento por un error aislado.*
+2. **Días crónicamente riesgosos (patrón repetitivo):** Si empiezas a tener malos días de forma consecutiva (por ejemplo, manejas con exceso de velocidad durante 3 o 4 días seguidos), la fórmula detectará la caída repetitiva en el 30% del score diario, lo que erosionará tu "colchón" histórico y tu Score Asegurador comenzará a bajar significativamente. *Solo penalizamos cuando hay un deterioro real de comportamiento.*
+3. **Días de consistencia constante:** Si mantienes trayectos seguros (rating > 75) consistentemente, el sistema te premiará incrementando tu "mejor racha", mitigando de forma anticipada posibles errores en el futuro, y haciéndote dueño del mejor nivel de prima posible.
+
+---
+
 ## Stack Tecnológico
 
 Hemos construido este proyecto priorizando la compatibilidad universal, el mínimo tiempo de carga y la nula fricción (no requiere instalación), manteniendo un nivel estético Premium (Glassmorphism, Dark UI).
